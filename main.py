@@ -33,6 +33,7 @@ bot = discord.Bot(intents=Intents.all())
 
 @bot.event
 async def on_ready():
+    os.makedirs('db', exist_ok=True)
     await setup_db()
     print(f'Logged in as {bot.user}')
 
