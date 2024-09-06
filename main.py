@@ -7,6 +7,7 @@ from discord.ext import commands
 from discord import Intents
 from dotenv import load_dotenv
 import aiosqlite
+import webserver
 
 load_dotenv()
 
@@ -34,6 +35,10 @@ bot = discord.Bot(intents=Intents.all())
 async def on_ready():
     await setup_db()
     print(f'Logged in as {bot.user}')
+
+@bot.slash_command(name="greet", description="Greet Howdy")
+async def greet(ctx):
+    await ctx.send(f"Hello {bot.user.mention}!")
 
 async def setup_db():
     async with aiosqlite.connect("db/levels.db") as db:
@@ -130,6 +135,9 @@ async def on_message(message: discord.Message):
 
     if message.author.bot:
         return
+    
+    if bot.user.is_mentioned(message):
+        await message.reply(f"Hi, {message.author.mention}!")
 
     # Check for censored words
     if any(word in message.content.lower() for word in censored_words):
@@ -243,4 +251,5 @@ async def level(ctx: discord.ApplicationContext):
         await ctx.respond(f"You can only check your level in the {ctx.guild.get_channel(1281689795919089756).mention} channel.", delete_after=5.0)
 
 # Run the bot with token
+webserver.keep_alive()
 bot.run(os.getenv("TOKEN"))
