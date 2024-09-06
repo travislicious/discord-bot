@@ -58,7 +58,7 @@ async def setup_db():
 
 async def kick(ctx: discord.ApplicationContext, member: discord.Member, *, reason="No reason"):
     await member.kick(reason=reason)
-    await ctx.respond(f'**{member.name}** has been kicked for **{reason}**.', delete_after=3.0)
+    await ctx.respond(f'**{member.name}** has been kicked for **{reason}**.', delete_after=5.0)
 
 # Ban a member
 @bot.slash_command(name="ban", description="Ban a member.")
@@ -69,7 +69,7 @@ async def kick(ctx: discord.ApplicationContext, member: discord.Member, *, reaso
 
 async def ban(ctx: discord.ApplicationContext, member: discord.Member, *, reason="No reason"):
     await member.ban(reason=reason)
-    await ctx.respond(f'**{member.name}** has been banned for **{reason}**.', delete_after=3.0)
+    await ctx.respond(f'**{member.name}** has been banned for **{reason}**.', delete_after=5.0)
 
 # Unban a member
 @bot.slash_command(name="unban", description="Unban a member.")
@@ -83,10 +83,10 @@ async def unban(ctx: discord.ApplicationContext, *, member_name: str):
         user = ban_entry.user
         if user.name == member_name:
             await ctx.guild.unban(user)
-            await ctx.respond(f'**{user.name}** has been unbanned.', delete_after=3.0)
+            await ctx.respond(f'**{user.name}** has been unbanned.', delete_after=5.0)
             return
 
-    await ctx.respond(f'**{member_name}** was not found in the banned list.', delete_after=3.0)
+    await ctx.respond(f'**{member_name}** was not found in the banned list.', delete_after=5.0)
 
 # Mute a member
 @bot.slash_command(name="mute", description="Mute a member.")
@@ -105,12 +105,12 @@ async def mute(ctx: discord.ApplicationContext, member: discord.Member, *, reaso
             await channel.set_permissions(muted_role, speak=False, send_messages=False)
 
     await member.add_roles(muted_role, reason=reason)
-    await ctx.respond(f'**{member.name}** has been muted for **{reason}**.', delete_after=3.0)
+    await ctx.respond(f'**{member.name}** has been muted for **{reason}**.', delete_after=5.0)
 
     if duration:
         await asyncio.sleep(duration * 60)
         await member.remove_roles(muted_role)
-        await ctx.respond(f'**{member.name}** has been unmuted after **{duration}** minutes.', delete_after=3.0)
+        await ctx.respond(f'**{member.name}** has been unmuted after **{duration}** minutes.', delete_after=5.0)
 
 
 # Unmute a member
@@ -123,7 +123,7 @@ async def unmute(ctx: discord.ApplicationContext, member: discord.Member):
     muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
     if muted_role in member.roles:
         await member.remove_roles(muted_role)
-        await ctx.respond(f'**{member.name}** has been unmuted.', delete_after=3.0)
+        await ctx.respond(f'**{member.name}** has been unmuted.', delete_after=5.0)
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -171,7 +171,7 @@ async def warn_user(user: discord.User, channel: discord.TextChannel, reason="Vi
             await mute_user(user, channel)
         else:
             user_warns[user.id] = warns
-            await channel.send(f"{user.mention}, you have been warned for: {reason}. Warning {warns}/{max_warnings}", delete_after=3.0)
+            await channel.send(f"{user.mention}, you have been warned for: {reason}. Warning {warns}/{max_warnings}", delete_after=5.0)
 
         # Save the updated warnings
         await db.execute(
@@ -195,12 +195,12 @@ async def mute_user(user: discord.User, channel: discord.TextChannel):
 
     # Apply the mute
     await user.add_roles(muted_role)
-    await channel.send(f"{user.mention} has been muted for {mute_time} seconds.", delete_after=3.0)
+    await channel.send(f"{user.mention} has been muted for {mute_time} seconds.", delete_after=5.0)
 
     # Unmute after the specified time
     await asyncio.sleep(mute_time)
     await user.remove_roles(muted_role)
-    await channel.send(f"{user.mention} has been unmuted.", delete_after=3.0)
+    await channel.send(f"{user.mention} has been unmuted.", delete_after=5.0)
 
 async def add_xp(user: discord.User):
     async with aiosqlite.connect("db/levels.db") as db:
@@ -214,7 +214,7 @@ async def add_xp(user: discord.User):
             level, xp = 1, 0
 
         # Level up
-        if xp >= (level * 100) + random.randint((level * 100) / 5, (level * 100) - 20):
+        if xp >= (level * 100):
             xp = 0
             level += 1
             await user.send(f"Congrats {user.mention}, you leveled up to **{level}**!")
@@ -229,9 +229,7 @@ async def add_xp(user: discord.User):
 @bot.slash_command(name="level", description="Get your current level.")
 async def level(ctx: discord.ApplicationContext):
 
-    if ctx.channel.name != "check-your-level":
-        await ctx.respond(f"You can only check your level in the {ctx.guild.get_channel(1281689795919089756).mention} channel.") 
-    else:      
+    if ctx.channel.name == "check-your-level":
         async with aiosqlite.connect("db/levels.db") as db:
             cursor = await db.execute("SELECT level, xp FROM user_levels WHERE user_id = ?", (ctx.author.id,))
             data = await cursor.fetchone()
@@ -240,7 +238,9 @@ async def level(ctx: discord.ApplicationContext):
                 level, xp = data
                 await ctx.send(f"{ctx.author.mention}, you are level **{level}** with **{xp}**/{math.floor(level * 100)} XP.")
             else:
-                await ctx.send(f"{ctx.author.mention}, you have no level yet.")
+                await ctx.send(f"{ctx.author.mention}, you have no level yet.", delete_after=5.0)
+    else:
+        await ctx.respond(f"You can only check your level in the {ctx.guild.get_channel(1281689795919089756).mention} channel.", delete_after=5.0)
 
 # Run the bot with token
 bot.run(os.getenv("TOKEN"))
