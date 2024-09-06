@@ -1,7 +1,7 @@
 from flask import Flask
 import threading
 
-app = Flask()
+app = Flask('')
 
 @app.route("/")
 def main():
