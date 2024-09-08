@@ -1,15 +1,18 @@
-import math
 import os
-import asyncio
+import aiohttp
+import time
+import re
 import random
-import discord
-from discord.ext import commands
-from discord import Intents
+import asyncio
+import nextcord
+from nextcord.ext import commands
+from nextcord import Intents
 from dotenv import load_dotenv
-import aiosqlite
+import utils
+import webrequests
 import webserver
 
-load_dotenv()
+load_dotenv(override=True)
 
 def get_badwords():
     with open('badwords.txt', 'r', encoding='utf-8') as f:
@@ -21,236 +24,310 @@ def get_badwords():
         return words_list
 
 censored_words = get_badwords()  # Add your censored words here
-spam_limit = 5
-spam_time_frame = 10
+# Store user activity
 user_messages = {}
-levels = {}
-user_warns = {}
-mute_time = 60  # Time to mute (in seconds) after 3 warnings
-max_warnings = 3
 
-bot = discord.Bot(intents=Intents.all())
+# Parameters for spam detection
+MESSAGE_THRESHOLD = 5
+TIME_WINDOW = 10  # in seconds
+MENTION_THRESHOLD = 5
+WARNING_THRESHOLD = 3  # Warnings before mute
+MUTE_DURATION = 10  # Mute duration in minutes
+XP_PER_MESSAGE = (5, 35)
+
+MUTED_ROLE_NAME = "Muted"
+
+intents = Intents.all()
+bot = commands.Bot(intents=intents)
 
 @bot.event
 async def on_ready():
-    os.makedirs('db', exist_ok=True)
-    await setup_db()
-    print(f'Logged in as {bot.user}')
+    await utils.init_db()
+    await bot.sync_all_application_commands()
+    print(f'Logged in as {bot.user.name}')
 
-@bot.slash_command(name="greet", description="Greet Howdy")
-async def greet(ctx):
-    await ctx.send(f"Hello {bot.user.mention}!")
-
-async def setup_db():
-    async with aiosqlite.connect("db/levels.db") as db:
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS user_levels (user_id INTEGER PRIMARY KEY, level INTEGER, xp INTEGER)"
-        )
-        await db.commit()
-
-    async with aiosqlite.connect("db/warns.db") as db:      
-        await db.execute(
-            "CREATE TABLE IF NOT EXISTS user_warns (user_id INTEGER PRIMARY KEY, warns INTEGER)"
-
-        )
-        await db.commit()
-
-# Kick a member
-@bot.slash_command(name="kick", description="Kick a member.")
-@commands.has_permissions(kick_members=True)
-
-@discord.option("member", description="The member to kick", type=discord.Member)
-@discord.option("reason", description="The reason for kicking", type=str)
-
-async def kick(ctx: discord.ApplicationContext, member: discord.Member, *, reason="No reason"):
-    await member.kick(reason=reason)
-    await ctx.respond(f'**{member.name}** has been kicked for **{reason}**.', delete_after=5.0)
-
-# Ban a member
-@bot.slash_command(name="ban", description="Ban a member.")
-@commands.has_permissions(ban_members=True)
-
-@discord.option("member", description="The member to ban", type=discord.Member)
-@discord.option("reason", description="The reason for banning", type=str)
-
-async def ban(ctx: discord.ApplicationContext, member: discord.Member, *, reason="No reason"):
-    await member.ban(reason=reason)
-    await ctx.respond(f'**{member.name}** has been banned for **{reason}**.', delete_after=5.0)
-
-# Unban a member
-@bot.slash_command(name="unban", description="Unban a member.")
-@commands.has_permissions(ban_members=True)
-
-@discord.option("member_name", description="The name of the member to unban", type=str)
-
-async def unban(ctx: discord.ApplicationContext, *, member_name: str):
-    banned_users = await ctx.guild.bans()
-    for ban_entry in banned_users:
-        user = ban_entry.user
-        if user.name == member_name:
-            await ctx.guild.unban(user)
-            await ctx.respond(f'**{user.name}** has been unbanned.', delete_after=5.0)
-            return
-
-    await ctx.respond(f'**{member_name}** was not found in the banned list.', delete_after=5.0)
-
-# Mute a member
-@bot.slash_command(name="mute", description="Mute a member.")
-@commands.has_permissions(manage_roles=True)
-
-@discord.option("member", description="The member to mute", type=discord.Member)
-@discord.option("duration", description="The duration of the mute", type=int)
-@discord.option("reason", description="The reason for muting", type=str)
-
-async def mute(ctx: discord.ApplicationContext, member: discord.Member, *, reason="No reason", duration=None):
-    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if not muted_role:
-        muted_role = await ctx.guild.create_role(name="Muted")
-
-        for channel in ctx.guild.channels:
-            await channel.set_permissions(muted_role, speak=False, send_messages=False)
-
-    await member.add_roles(muted_role, reason=reason)
-    await ctx.respond(f'**{member.name}** has been muted for **{reason}**.', delete_after=5.0)
-
-    if duration:
-        await asyncio.sleep(duration * 60)
-        await member.remove_roles(muted_role)
-        await ctx.respond(f'**{member.name}** has been unmuted after **{duration}** minutes.', delete_after=5.0)
-
-
-# Unmute a member
-@bot.slash_command(name="unmute", description="Unmute a member.")
-@commands.has_permissions(manage_roles=True)
-
-@discord.option("member", description="The member to unmute", type=discord.Member)
-
-async def unmute(ctx: discord.ApplicationContext, member: discord.Member):
-    muted_role = discord.utils.get(ctx.guild.roles, name="Muted")
-    if muted_role in member.roles:
-        await member.remove_roles(muted_role)
-        await ctx.respond(f'**{member.name}** has been unmuted.', delete_after=5.0)
-
-@bot.event
-async def on_message(message: discord.Message):
-
-    if message.author.bot:
-        return
+async def get_or_create_muted_role(guild: nextcord.Guild):
+    """Check if the muted role exists, and create it if not."""
+    muted_role = nextcord.utils.get(guild.roles, name=MUTED_ROLE_NAME)
     
-    if bot.user.is_mentioned(message):
-        await message.reply(f"Hi, {message.author.mention}!")
-
-    # Check for censored words
-    if any(word in message.content.lower() for word in censored_words):
-        await message.delete()
-        await warn_user(message.author, message.channel, reason="Inappropriate language")
-        return
-
-    # Spam detection
-    if message.author.id not in user_messages:
-        user_messages[message.author.id] = []
-
-    user_messages[message.author.id].append(message.created_at)
-
-    # Remove messages older than the spam_time_frame
-    user_messages[message.author.id] = [
-        msg_time for msg_time in user_messages[message.author.id]
-        if (message.created_at - msg_time).seconds <= spam_time_frame
-    ]
-
-    if len(user_messages[message.author.id]) > spam_limit:
-        await warn_user(message.author, message.channel, reason="Spamming")
-        return
-
-    # Handle leveling system
-    await add_xp(message.author)
-
-
-async def warn_user(user: discord.User, channel: discord.TextChannel, reason="Violation"):
-    async with aiosqlite.connect("db/warns.db") as db:
-        cursor = await db.execute("SELECT warns FROM user_warns WHERE user_id = ?", (user.id,))
-        data = await cursor.fetchone()
-
-        if data:
-            warns = data[0] + 1
-        else:
-            warns = 1
-        # If the user exceeds the maximum warnings, mute or ban
-        if warns >= max_warnings:
-            await mute_user(user, channel)
-        else:
-            user_warns[user.id] = warns
-            await channel.send(f"{user.mention}, you have been warned for: {reason}. Warning {warns}/{max_warnings}", delete_after=5.0)
-
-        # Save the updated warnings
-        await db.execute(
-            "INSERT OR REPLACE INTO user_warns (user_id, warns) VALUES (?, ?)",
-            (user.id, warns),
+    if muted_role is None:
+        muted_role = await guild.create_role(
+            name=MUTED_ROLE_NAME,
+            permissions=nextcord.Permissions(send_messages=False, speak=False),
+            reason="Creating Muted role for muting members."
         )
-        await db.commit()
-
-
-
-async def mute_user(user: discord.User, channel: discord.TextChannel):
-    guild = channel.guild
-    muted_role = discord.utils.get(guild.roles, name="Muted")
-
-    if not muted_role:
-        # Create a "Muted" role if it doesn't exist
-        muted_role = await guild.create_role(name="Muted")
-
+        
+        # Modify permissions for all channels in the guild to prevent speaking
         for channel in guild.channels:
-            await channel.set_permissions(muted_role, speak=False, send_messages=False)
-
-    # Apply the mute
-    await user.add_roles(muted_role)
-    await channel.send(f"{user.mention} has been muted for {mute_time} seconds.", delete_after=5.0)
-
-    # Unmute after the specified time
-    await asyncio.sleep(mute_time)
-    await user.remove_roles(muted_role)
-    await channel.send(f"{user.mention} has been unmuted.", delete_after=5.0)
-
-async def add_xp(user: discord.User):
-    async with aiosqlite.connect("db/levels.db") as db:
-        cursor = await db.execute("SELECT level, xp FROM user_levels WHERE user_id = ?", (user.id,))
-        data = await cursor.fetchone()
-
-        if data:
-            level, xp = data
-            xp += random.randint(10, 45)
-        else:
-            level, xp = 1, 0
-
-        # Level up
-        if xp >= (level * 100):
-            xp = 0
-            level += 1
-            await user.send(f"Congrats {user.mention}, you leveled up to **{level}**!")
-
-        await db.execute(
-            "INSERT OR REPLACE INTO user_levels (user_id, level, xp) VALUES (?, ?, ?)",
-            (user.id, level, xp),
-        )
-        await db.commit()
-
-# Get level command
-@bot.slash_command(name="level", description="Get your current level.")
-async def level(ctx: discord.ApplicationContext):
+            await channel.set_permissions(muted_role, send_messages=False, speak=False)
+    
+    return muted_role
+@bot.slash_command(name="level", description="Get your current level")
+async def level(ctx: nextcord.Interaction):
 
     if ctx.channel.name == "check-your-level":
-        async with aiosqlite.connect("db/levels.db") as db:
-            cursor = await db.execute("SELECT level, xp FROM user_levels WHERE user_id = ?", (ctx.author.id,))
-            data = await cursor.fetchone()
+        user_id = ctx.user.id
+        xp, level = await utils.get_user_level_data(user_id)
 
-            if data:
-                level, xp = data
-                await ctx.send(f"{ctx.author.mention}, you are level **{level}** with **{xp}**/{math.floor(level * 100)} XP.")
-            else:
-                await ctx.send(f"{ctx.author.mention}, you have no level yet.", delete_after=5.0)
+        # Example user data
+        user_data = {
+            "name": f"{ctx.user.name}#{ctx.user.discriminator}",
+            "level": str(level),
+            "xp": f"{xp} / {level * 100}",
+            "percentage": int((xp / (level * 100)) * 100),
+        }
+        
+        await utils.generate_level_card(ctx, user_data)
     else:
-        await ctx.respond(f"You can only check your level in the {ctx.guild.get_channel(1281689795919089756).mention} channel.", delete_after=5.0)
+        channel = nextcord.utils.get(ctx.guild.channels, name="check-your-level")
+        await ctx.send(f"This command is only available in the {channel.mention} channel.", ephemeral=True)
 
-# Run the bot with token
+
+@bot.slash_command(name="info", description="Get your info.")
+async def info(interaction: nextcord.Interaction):
+    """
+    Get your info.
+    """
+    user = interaction.user
+
+    embed = nextcord.Embed(title=f"{user.display_name}'s Info:", description="Here is your info.")
+    embed.add_field(name="**Username :** ", value=user.name, inline=False)
+    embed.add_field(name="**Display Name:** ", value=user.display_name, inline=False)
+    embed.add_field(name="**Discriminator:** ", value=user.discriminator, inline=False)
+    human_readable_date = user.joined_at.strftime("%B %d, %Y")
+    embed.add_field(name="**Joined at:** ", value=human_readable_date, inline=False)
+    embed.add_field(name="**ID:** ", value=user.id, inline=False)
+    embed.add_field(name="**On mobile:** ", value=user.is_on_mobile(), inline=False)
+    embed.add_field(name="**Top role:** ", value=user.top_role, inline=False)
+    embed.add_field(name="**Roles:** ", value="")
+
+    for pos, role in enumerate(user.roles):
+        if role.name in 'Muted':
+            pass
+        embed.add_field(name=f"**Role #{pos}**", value=role.name, inline=False)
+
+    embed.set_thumbnail(url=user.display_avatar)
+    await interaction.response.send_message("**Your Info**: ", embed=embed, ephemeral=True)
+
+@bot.slash_command(name="greet", description='Greet someone.')
+async def greet(interaction: nextcord.Interaction, member: nextcord.Member):
+    await interaction.response.send_message(f'Hello {member.mention}!')
+
+@bot.slash_command(name="weather", description="Get weather of a country/city.")
+async def weather(interaction: nextcord.Interaction, place: str):
+    """
+    This command retrieves information about a given country.
+    
+    Args:
+        place: The name of the country/city to get weather.
+    """
+        
+    await interaction.response.defer()
+    url = f"http://wttr.in/{place}?format=3"
+    response = webrequests.get_weather(url)
+    embed = nextcord.Embed(title="**Weather Fetch**", description=f"Weather in **{place.capitalize()}**.")
+    if response.status_code == 200:
+        embed.add_field(name="Weather Data", value=response.text, inline=False)
+        await interaction.followup.send(embed=embed)
+        response.close()
+    else:
+        await interaction.followup.send("Failed to fetch weather.", ephemeral=True)
+
+
+@bot.slash_command(name="country_info", description="Get information about a country by its name.")
+async def country_info(interaction: nextcord.Interaction, country_name: str):
+    """
+    This command retrieves information about a given country.
+
+    Args:
+        country_name: The name of the country to get information about.
+    """
+    # Defer the interaction response while fetching data
+    await interaction.response.defer()
+
+    url = f"https://restcountries.com/v3.1/name/{country_name}"
+    
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    await interaction.followup.send(f"No data found for '{country_name}'. Please try again with a valid country name.", ephemeral=True)
+                    return
+
+                data = await response.json()
+
+                if len(data) == 0:
+                    await interaction.followup.send(f"No data found for '{country_name}'. Please try again with a valid country name.", ephemeral=True)
+                    return
+
+                country_data = data[0]
+                
+                # Extracting relevant information
+                name = country_data.get("name", {}).get("common", "N/A")
+                capital = country_data.get("capital", ["N/A"])[0]
+                region = country_data.get("region", "N/A")
+                subregion = country_data.get("subregion", "N/A")
+                population = country_data.get("population", "N/A")
+                languages = ", ".join([lang for lang in country_data.get("languages", {}).values()])
+                translations = country_data.get("translations", {})['cym']['official']
+                flag = country_data.get("flags", {}).get("png", "")
+                coat_of_arms = country_data.get("coatOfArms", {}).get("png", "")
+                
+                # Create the embed to display the information
+                embed = nextcord.Embed(title=f"Information about {name}", color=nextcord.Color.blue())
+                embed.add_field(name="**Capital**", value=capital, inline=False)
+                embed.add_field(name="**Region**", value=region, inline=False)
+                embed.add_field(name="**Subregion**", value=subregion, inline=False)
+                embed.add_field(name="**Population**", value=f"{population:,}", inline=False)
+
+                if len(languages) > 1024:
+                    languages = languages[:1021] + "..."
+
+                embed.add_field(name="**Languages**", value=languages or "N/A", inline=False)
+                embed.add_field(name="**Translations**", value=translations or "N/A", inline=False)
+                
+                # Add Flag and Coat of Arms images
+                if flag:
+                    embed.set_image(url=flag)
+                if coat_of_arms:
+                    embed.set_thumbnail(url=coat_of_arms)
+                
+                await interaction.followup.send(embed=embed)
+                await session.close()
+        
+        except aiohttp.ClientError as e:
+            # Handle any aiohttp client exceptions (network issues, etc.)
+            await interaction.followup.send(f"An error occurred while fetching country data: {str(e)}", ephemeral=True)
+
+@bot.slash_command(name="unban", description="Unban a Member")
+async def unban(interaction: nextcord.Interaction, member: nextcord.User):
+    """
+    Unban a member from the server.
+    
+    Args:
+        member: The member to unban.
+    """
+    
+    if interaction.user != interaction.guild.owner and not interaction.user.guild_permissions.ban_members:
+        await interaction.response.send_message("You do not have permission to unban members.", ephemeral=True)
+        return
+
+    banned_members = await interaction.guild.bans()
+    for ban_entry in banned_members:
+        if ban_entry.user == member:
+            await interaction.guild.unban(member)
+            await interaction.response.send_message(f'{member.mention} has been unbanned.', ephemeral=True)
+            return
+    
+    await interaction.response.send_message(f'{member.mention} is not banned.', ephemeral=True)
+
+@bot.slash_command(name="mute", description="Mute a member.")
+async def mute(interaction: nextcord.Interaction, member: nextcord.Member, duration: float = None, reason: str = "No reason."):
+    """
+    This command mutes a member for a specified duration with an optional reason.
+    
+    Args:
+        member: The member to mute.
+        duration: The duration of the mute in minutes (optional).
+        reason: The reason for the mute (optional).
+    """
+    if interaction.user != interaction.guild.owner and not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("You do not have permission to mute members.", ephemeral=True)
+        return
+
+    muted_role = await get_or_create_muted_role(interaction.guild)
+
+    if member.top_role.name == "Moderator":
+        await interaction.response.send_message("You cannot mute a moderator.", ephemeral=True)
+        return
+    
+    if muted_role in member.roles:
+        await interaction.response.send_message(f"{member.display_name} is already muted.", ephemeral=True)
+    else:
+        await member.add_roles(muted_role, reason=reason)
+        await interaction.response.send_message(f"{member.display_name} has been muted.", ephemeral=True)
+        
+        if duration and duration > 0:
+            await asyncio.sleep(duration * 60)
+            await member.remove_roles(muted_role)
+            await interaction.response.send_message(f"{member.display_name} has been unmuted after {round(duration)} minutes.", ephemeral=True)
+
+@bot.slash_command(name="unmute", description="Unmute a member.")
+async def unmute(interaction: nextcord.Interaction, member: nextcord.Member):
+    """
+    This command unmutes a member.
+
+    Args:
+        member: The member to unmute.
+    """
+    if interaction.user != interaction.guild.owner and not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("You do not have permission to unmute members.", ephemeral=True)
+        return
+
+    muted_role = await get_or_create_muted_role(interaction.guild)
+
+    if muted_role not in member.roles:
+        await interaction.response.send_message(f"{member.display_name} is not muted.", ephemeral=True)
+    else:
+        await member.remove_roles(muted_role)
+        await interaction.response.send_message(f"{member.display_name} has been unmuted.", ephemeral=True)
+
+@bot.event
+async def on_message(message: nextcord.Message):
+    if message.author == bot.user:
+        return
+    
+    user_id = message.author.id
+    current_time = time.time()
+
+    content = message.content.lower()
+    for bad_word in censored_words:
+        pattern = r'\b' + re.escape(bad_word) + r'\b'
+        if re.search(pattern, content):
+            await utils.add_warning(message.author.id)
+            warn_count = await utils.get_warnings(message.author.id)
+            await message.delete()
+            await message.channel.send(f"{message.author.mention}, please avoid using inappropriate language. You now have {warn_count} warning(s).")
+        
+        # Issue a mute if warning threshold is met
+            if warn_count >= WARNING_THRESHOLD:
+                await utils.mute_user(message.channel, message.author, MUTE_DURATION)
+                await utils.clear_warnings(message.author.id)
+            break  # Reset warnings after mute
+
+    # If user isn't tracked yet, initialize
+    if user_id not in user_messages:
+        user_messages[user_id] = []
+
+    # Append the current message timestamp
+    user_messages[user_id].append(current_time)
+
+    # Remove old messages outside the time window
+    user_messages[user_id] = [msg_time for msg_time in user_messages[user_id] if current_time - msg_time <= TIME_WINDOW]
+
+    # Spam Detection: Message Flooding
+    if len(user_messages[user_id]) > MESSAGE_THRESHOLD:
+        await message.channel.send(f"{message.author.mention} is spamming! Please stop.")
+        await message.delete()
+
+    # Spam Detection: Excessive Mentions
+    if len(message.mentions) > MENTION_THRESHOLD:
+        await message.channel.send(f"{message.author.mention}, you are mentioning too many users!")
+        await message.delete()
+
+    xp_gained = random.randint(*XP_PER_MESSAGE)
+    await utils.add_xp(message.author, xp_gained)
+
+    # Allow commands to be processed
+    await bot.process_commands(message)
+
+
+@bot.event
+async def on_member_join(member: nextcord.Member):
+    guild = member.guild
+    total_members = guild.member_count
+
+    await member.send(f'Hey {member.mention}, Welcome in the Travis House.\nLet\'s introduce yourself in the general room. You\'re the member **#{total_members}**')
+    
 webserver.keep_alive()
 bot.run(os.getenv("TOKEN"))
