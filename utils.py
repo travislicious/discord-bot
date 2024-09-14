@@ -149,3 +149,4 @@ async def init_db():
     os.makedirs("db", exist_ok=True)
     await setup_lvl_db()
     await setup_warns_db()
+

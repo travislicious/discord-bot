@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 import utils
 import webrequests
 import webserver
+import ai_utils
+from PIL import Image
 
 load_dotenv(override=True)
 
@@ -134,8 +136,8 @@ async def weather(interaction: nextcord.Interaction, place: str):
         await interaction.followup.send("Failed to fetch weather.", ephemeral=True)
 
 
-@bot.slash_command(name="country_info", description="Get information about a country by its name.")
-async def country_info(interaction: nextcord.Interaction, country_name: str):
+@bot.slash_command(name="find-country", description="Get information about a country by its name.")
+async def find_country(interaction: nextcord.Interaction, country_name: str):
     """
     This command retrieves information about a given country.
 
@@ -246,8 +248,9 @@ async def mute(interaction: nextcord.Interaction, member: nextcord.Member, durat
     else:
         await member.add_roles(muted_role, reason=reason)
         await interaction.response.send_message(f"{member.display_name} has been muted.", ephemeral=True)
+
         
-        if duration and duration > 0:
+        if duration:
             await asyncio.sleep(duration * 60)
             await member.remove_roles(muted_role)
             await interaction.response.send_message(f"{member.display_name} has been unmuted after {round(duration)} minutes.", ephemeral=True)
@@ -272,10 +275,42 @@ async def unmute(interaction: nextcord.Interaction, member: nextcord.Member):
         await member.remove_roles(muted_role)
         await interaction.response.send_message(f"{member.display_name} has been unmuted.", ephemeral=True)
 
+@bot.slash_command(name="prompt-image", description="Generate an image from prompt.")
+async def prompt_image(interaction: nextcord.Interaction, img_prompt: str):
+    """
+    This command generates an image from a prompt.
+    
+    Args:
+        prompt: The image prompt.
+    """
+    await interaction.response.defer()
+    image_path = await ai_utils.generate_images(img_prompt)
+    await interaction.followup.send(file=nextcord.File(image_path))
+
+@bot.slash_command(name="ask-howdy", description="Ask howdy.")
+async def prompt(interaction: nextcord.Interaction, txt_prompt: str):
+    """
+    This command asks howdy.
+    
+    Args:
+        prompt: The prompt.
+    """
+    await interaction.response.defer()
+    resp = await ai_utils.generate_text(txt_prompt)
+    await interaction.followup.send(resp)
+
 @bot.event
 async def on_message(message: nextcord.Message):
+
+
     if message.author == bot.user:
         return
+    
+    if bot.user.mentioned_in(message):
+        print(message.content.lower())
+        resp = await ai_utils.chat(message.content.lower(), message.author.display_name)
+        await message.channel.send(resp)
+
     
     user_id = message.author.id
     current_time = time.time()
@@ -327,7 +362,7 @@ async def on_member_join(member: nextcord.Member):
     guild = member.guild
     total_members = guild.member_count
 
-    await member.send(f'Hey {member.mention}, Welcome in the Travis House.\nLet\'s introduce yourself in the general room. You\'re the member **#{total_members}**')
+    await member.send(f'Hey {member.mention}, Welcome in the Hemmings\'s Servers.\nLet\'s introduce yourself in the twilight room. You\'re the member **#{total_members}**')
     
 webserver.keep_alive()
 bot.run(os.getenv("TOKEN"))
